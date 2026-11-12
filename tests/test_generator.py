@@ -6,7 +6,7 @@ from typing import List
 
 import pytest
 
-from src.cli import RagCLI, _answer_dataset, _default_factory
+from src.cli import RagCLI, _answer_dataset
 from src.generator import (
     NO_CONTEXT,
     AnswerGenerator,
@@ -145,12 +145,71 @@ def test_cli_validation(
 ) -> None:
     """CLI answer commands never raise on bad input."""
     cli = RagCLI()
-    cli.answer("", 3, str(tmp_path))
-    cli.answer("q", "x", str(tmp_path))  # type: ignore
-    cli.answer("q", 3, str(tmp_path / "none"))
-    cli.answer_dataset(str(tmp_path / "missing.json"))
-    assert capsys.readouterr().err.count("Error") == 4
-    assert callable(_default_factory)
+    cases = [
+        (lambda: cli.answer("", 3, str(tmp_path)), "empty query"),
+        (lambda: cli.answer("q", "x", str(tmp_path)),  # type: ignore
+         "k must be an integer"),
+        (lambda: cli.answer("q", 3, str(tmp_path / "none")),
+         "Index not found"),
+        (lambda: cli.answer_dataset(str(tmp_path / "missing.json")),
+         "file not found"),
+    ]
+    for call, message in cases:
+        call()
+        assert message in capsys.readouterr().err
+
+
+def test_generate_with_fakes() -> None:
+    """generate slices prompt tokens, strips thinking, disables thinking."""
+    import torch
+
+    calls: List[dict] = []  # type: ignore[type-arg]
+
+    class Tok:
+        """Fake tokenizer."""
+
+        pad_token_id = 0
+
+        def apply_chat_template(self, messages: List[dict],  # type: ignore
+                                **kwargs: object) -> str:
+            """Record the call."""
+            calls.append(kwargs)
+            return "PROMPT"
+
+        def encode(self, text: str, add_special_tokens: bool = False
+                   ) -> List[str]:
+            """Split."""
+            return text.split()
+
+        def __call__(  # type: ignore[type-arg]
+            self, text: str, return_tensors: str
+        ) -> dict:
+            """Return 3 prompt tokens."""
+            return {"input_ids": torch.tensor([[5, 6, 7]])}
+
+        def decode(self, ids: torch.Tensor,
+                   skip_special_tokens: bool = True) -> str:
+            """Return text only if the ids are the new ones."""
+            assert ids.tolist() == [8, 9]
+            return "<think>hm</think> Answer "
+
+    class Model:
+        """Fake model."""
+
+        device = torch.device("cpu")
+
+        def eval(self) -> None:
+            """No-op."""
+
+        def generate(self, **kwargs: object) -> torch.Tensor:
+            """Append two tokens to the prompt."""
+            assert kwargs["do_sample"] is False
+            return torch.tensor([[5, 6, 7, 8, 9]])
+
+    gen = AnswerGenerator(model=Model(), tokenizer=Tok())
+    assert gen.generate("Q?", [_chunk("abc")]) == "Answer"
+    assert calls[0]["enable_thinking"] is False
+    assert calls[0]["add_generation_prompt"] is True
 
 
 def test_fit_contexts_truncates() -> None:

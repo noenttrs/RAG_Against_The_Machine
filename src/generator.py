@@ -141,19 +141,16 @@ class AnswerGenerator:
                 device = "mps"
             else:
                 device = "cpu"
+            dtype = torch.float32
             if device == "cuda":
                 dtype = (
                     torch.bfloat16
                     if torch.cuda.is_bf16_supported()
                     else torch.float16
                 )
-            elif device == "mps":
-                dtype = torch.float16
-            else:
-                dtype = torch.float32
             tokenizer = AutoTokenizer.from_pretrained(model_name)
             model = AutoModelForCausalLM.from_pretrained(
-                model_name, torch_dtype=dtype
+                model_name, dtype=dtype
             )
             model.to(device)
         self.tokenizer = tokenizer
