@@ -449,7 +449,6 @@ def chunk_file(
             chunker (``.py``, ``.md``/``.mdx``/``.rst``, otherwise text).
         max_chunk_size: Maximum chunk size in characters.
         trim: Strip leading/trailing whitespace from each chunk.
-        trim: Strip leading/trailing whitespace from each chunk.
 
     Returns:
         The chunks, in file order.

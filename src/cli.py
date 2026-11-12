@@ -1,9 +1,10 @@
 """Command line interface of the RAG system (exposed through Fire)."""
 
+import functools
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 
 from pydantic import ValidationError
 
@@ -24,6 +25,29 @@ def _new_id() -> str:
         A UUID string.
     """
     return str(uuid.uuid4())
+
+
+_F = TypeVar("_F", bound=Callable[..., None])
+
+
+def _safe(func: _F) -> _F:
+    """Turn any unexpected exception of a command into an error message.
+
+    Args:
+        func: A CLI command.
+
+    Returns:
+        The wrapped command, which never raises.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> None:
+        try:
+            func(*args, **kwargs)
+        except Exception as exc:
+            _error(f"{type(exc).__name__}: {exc}")
+
+    return wrapper  # type: ignore[return-value]
 
 
 def _error(message: str) -> None:
@@ -122,6 +146,7 @@ def _load_model(path: str, model: Any) -> Any:
 class RagCLI:
     """RAG against the machine: index, search, answer and evaluate."""
 
+    @_safe
     def index(
         self,
         max_chunk_size: int = 2000,
@@ -154,6 +179,7 @@ class RagCLI:
         except Exception as exc:
             _error(f"indexing failed: {exc}")
 
+    @_safe
     def search(
         self,
         query: str = "",
@@ -185,6 +211,7 @@ class RagCLI:
         )
         print(result.model_dump_json(indent=2))
 
+    @_safe
     def search_dataset(
         self,
         dataset_path: str = (
@@ -277,6 +304,7 @@ class RagCLI:
         """
         print("answer_dataset: not implemented yet")
 
+    @_safe
     def evaluate(
         self,
         student_search_results_path: str = (
@@ -288,15 +316,18 @@ class RagCLI:
         ),
         k: int = 10,
     ) -> None:
-        """Compute recall@k of search results against a reference dataset.
+        """Compute recall@j (j in 1, 3, 5, 10 up to k, and k) of results.
 
         Args:
             student_search_results_path: Path of the search results JSON.
             dataset_path: Path of the answered reference dataset.
-            k: Number of retrieved sources considered.
+            k: At most this many retrieved sources are considered.
         """
         k_value = _check_k(k)
         if k_value is None:
+            return
+        if k_value <= 0:
+            _error("k must be positive for evaluation")
             return
         results = _load_model(
             str(student_search_results_path), StudentSearchResults
@@ -306,5 +337,5 @@ class RagCLI:
         dataset = _load_model(str(dataset_path), RagDataset)
         if dataset is None:
             return
-        table = recall_table(results, dataset)
+        table = recall_table(results, dataset, k_value)
         print(" ".join(f"Recall@{n}: {v:.3f}" for n, v in table.items()))

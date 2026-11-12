@@ -1,11 +1,11 @@
 """Tests for index building and retrieval."""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from src.chunking import chunk_markdown, markdown_heading_contexts
-
 from src.index import build_index, list_files, parse_exclude_dirs
 from src.retriever import IndexNotFoundError, Retriever
 
@@ -65,7 +65,7 @@ def test_missing_index(tmp_path: Path) -> None:
 
 
 def test_exclude_dirs(tmp_path: Path) -> None:
-    """Excluded directory names are skipped below the repo root only."""
+    """Only top-level repo directories are excluded."""
     raw = tmp_path / "raw"
     for rel in ("repo/docs/a.md", "repo/tests/b.py", "repo/x/examples/c.py",
                 "repo/tests.md", "tests/d.md"):
@@ -75,7 +75,9 @@ def test_exclude_dirs(tmp_path: Path) -> None:
         p.relative_to(raw).as_posix()
         for p in list_files(str(raw), parse_exclude_dirs("tests,examples"))
     }
-    assert names == {"repo/docs/a.md", "repo/tests.md", "tests/d.md"}
+    assert names == {
+        "repo/docs/a.md", "repo/tests.md", "tests/d.md", "repo/x/examples/c.py"
+    }
     assert len(list_files(str(raw), parse_exclude_dirs(""))) == 5
 
 
@@ -91,3 +93,35 @@ def test_heading_context_and_trim() -> None:
     ctx = markdown_heading_contexts(text, chunks)
     assert ctx[0] == ""
     assert any("Top Sub" in c for c in ctx[1:])
+
+
+def test_exclude_keeps_nested_package(tmp_path: Path) -> None:
+    """repo/pkg/benchmarks is kept, repo/benchmarks is excluded."""
+    raw = tmp_path / "raw"
+    for rel in ("repo/pkg/benchmarks/x.py", "repo/benchmarks/x.py"):
+        (raw / rel).parent.mkdir(parents=True, exist_ok=True)
+        (raw / rel).write_text("x = 1")
+    names = [
+        p.relative_to(raw).as_posix()
+        for p in list_files(str(raw), parse_exclude_dirs("benchmarks"))
+    ]
+    assert names == ["repo/pkg/benchmarks/x.py"]
+
+
+def test_meta_records_exclude_dirs(corpus: Path, tmp_path: Path) -> None:
+    """meta.json stores the exclude_dirs option."""
+    out = tmp_path / "idx"
+    build_index(str(corpus), str(out), 2000, "foo,bar")
+    meta = json.loads((out / "meta.json").read_text())
+    assert meta["exclude_dirs"] == "foo,bar"
+
+
+def test_corrupt_vocab(corpus: Path, tmp_path: Path) -> None:
+    """A vocab id beyond the matrix width is rejected."""
+    out = tmp_path / "idx"
+    build_index(str(corpus), str(out), 2000)
+    vocab = json.loads((out / "vocab.json").read_text())
+    vocab["bogus"] = 10 ** 6
+    (out / "vocab.json").write_text(json.dumps(vocab))
+    with pytest.raises(IndexNotFoundError):
+        Retriever.load(str(out))

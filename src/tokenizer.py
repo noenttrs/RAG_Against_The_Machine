@@ -8,7 +8,6 @@ _RAW_RE = re.compile(r"[A-Za-z0-9_]+")
 _CAMEL_RE = re.compile(
     r"(?<=[a-z0-9])(?=[A-Z](?![A-Z][a-z]))|(?<=[A-Z])(?=[A-Z][a-z])"
 )
-BIGRAMS = True
 STOPWORDS = frozenset(
     "the a an is are of to in and or for on with what how does do which "
     "when where why be by as it this that from at can i you".split()
@@ -51,7 +50,7 @@ def _expand(raw: str) -> Tuple[str, ...]:
     return tuple(_stem(t) for t in terms if t not in STOPWORDS)
 
 
-def tokenize(text: str, bigrams: bool = BIGRAMS) -> List[str]:
+def tokenize(text: str, bigrams: bool = False) -> List[str]:
     """Tokenize text into normalized terms.
 
     Identifiers are emitted whole and split on underscores and camelCase.

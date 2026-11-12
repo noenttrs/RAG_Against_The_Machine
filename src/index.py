@@ -21,7 +21,8 @@ PATH_REPEAT = 2
 DEFAULT_EXCLUDE_DIRS = (
     "tests,benchmarks,examples,csrc,.buildkite,.github,tools"
 )
-BIGRAM_ALL = False
+BIGRAM_SKIP_SUFFIXES = frozenset({".py"})
+# Configuration of the indexed text (see build_index).
 TRIM_CHUNKS = True
 HEADING_CONTEXT = True
 HEADING_REPEAT = 1
@@ -52,8 +53,10 @@ def list_files(
 
     Args:
         raw_dir: Root directory of the corpus.
-        exclude: Directory names skipped on any path component below
-            the repository root (the first component under ``raw_dir``).
+        exclude: Names of top-level directories of the repository to
+            skip. The repository is the first component under ``raw_dir``
+            (e.g. ``data/raw/<repo>/<name>/...``); nested directories with
+            the same name (``<repo>/pkg/benchmarks``) are kept.
 
     Returns:
         Sorted list of file paths (as joined with ``raw_dir``).
@@ -63,7 +66,8 @@ def list_files(
     for path in sorted(root.rglob("*")):
         if path.suffix not in EXTENSIONS or not path.is_file():
             continue
-        if exclude & set(path.relative_to(root).parts[1:-1]):
+        parts = path.relative_to(root).parts
+        if len(parts) > 2 and parts[1] in exclude:
             continue
         if path.stat().st_size > MAX_FILE_SIZE:
             continue
@@ -163,7 +167,7 @@ def build_index(
             docs.append(
                 tokenize(
                     indexed_text(chunk, context),
-                    BIGRAM_ALL or path.suffix != ".py",
+                    path.suffix not in BIGRAM_SKIP_SUFFIXES,
                 )
             )
     matrix, vocab = build_matrix(docs)
@@ -187,6 +191,3 @@ def build_index(
     print(f"Ingestion complete! Indices saved under {processed_dir}/")
     print(f"Elapsed: {time.time() - start:.1f}s ({len(chunks)} chunks)")
     return len(chunks)
-
-
-__all__ = ["build_index", "build_matrix"]

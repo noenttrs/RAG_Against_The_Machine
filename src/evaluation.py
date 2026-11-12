@@ -66,15 +66,21 @@ def recall_at_k(
 
 
 def recall_table(
-    results: StudentSearchResults, dataset: RagDataset
+    results: StudentSearchResults,
+    dataset: RagDataset,
+    max_k: int = 10,
 ) -> Dict[int, float]:
-    """Compute recall for k in 1, 3, 5, 10.
+    """Compute recall for k in 1, 3, 5, 10 (limited to ``max_k``).
+
+    ``max_k`` itself is added when it is not one of the standard values.
 
     Args:
         results: Student search results.
         dataset: Reference dataset.
+        max_k: Largest k reported.
 
     Returns:
         Mapping from k to recall.
     """
-    return {k: recall_at_k(results, dataset, k) for k in KS}
+    ks = sorted({k for k in KS if k <= max_k} | {max_k})
+    return {k: recall_at_k(results, dataset, k) for k in ks}

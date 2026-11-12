@@ -1,6 +1,6 @@
 """Tests for recall evaluation."""
 
-from src.evaluation import iou_match, recall_at_k
+from src.evaluation import iou_match, recall_at_k, recall_table
 from src.models import (
     AnsweredQuestion,
     MinimalSearchResults,
@@ -57,3 +57,12 @@ def test_recall() -> None:
     )
     assert recall_at_k(results, dataset, 1) == 0.0
     assert recall_at_k(results, dataset, 2) == 0.25
+
+
+def test_recall_table_respects_k() -> None:
+    """Only j <= k are reported, plus k itself."""
+    dataset = RagDataset(rag_questions=[])
+    results = StudentSearchResults(search_results=[], k=4)
+    assert list(recall_table(results, dataset, 4)) == [1, 3, 4]
+    assert list(recall_table(results, dataset, 10)) == [1, 3, 5, 10]
+    assert list(recall_table(results, dataset, 1)) == [1]

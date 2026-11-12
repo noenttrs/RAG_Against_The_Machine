@@ -62,7 +62,11 @@ class Retriever:
                 f"Index not found or corrupt in '{processed_dir}' "
                 f"({exc}); run `index` first"
             ) from exc
-        if matrix.shape[0] != len(chunks):
+        if (
+            matrix.shape[0] != len(chunks)
+            or not isinstance(vocab, dict)
+            or any(v >= matrix.shape[1] or v < 0 for v in vocab.values())
+        ):
             raise IndexNotFoundError(
                 f"Index in '{processed_dir}' is inconsistent; "
                 "run `index` first"
