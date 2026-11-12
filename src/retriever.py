@@ -82,7 +82,7 @@ class Retriever:
         if k <= 0 or not query.strip():
             return []
         counts = Counter(
-            self.vocab[t] for t in tokenize(query) if t in self.vocab
+            self.vocab[t] for t in tokenize(query, True) if t in self.vocab
         )
         if not counts:
             return []

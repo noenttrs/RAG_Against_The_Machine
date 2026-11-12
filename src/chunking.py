@@ -16,7 +16,8 @@ Span = Tuple[int, int]
 _NEWLINE_RE = re.compile(r"\r\n|\r|\n")
 _HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]")
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
-_MIN_SECTION_SIZE = 200
+_MIN_SECTION_SIZE = 400
+_PY_MERGE_FRACTION = 0.5
 _MARKDOWN_SUFFIXES = (".md", ".mdx", ".rst")
 
 
@@ -109,8 +110,31 @@ def _pack(spans: Sequence[Span], limit: int) -> List[Span]:
     return packed
 
 
+def _trim(text: str, span: Span) -> Span:
+    """Strip leading and trailing whitespace from a span.
+
+    Args:
+        text: The full text.
+        span: ``(start, end)`` span.
+
+    Returns:
+        The trimmed span (unchanged when it is whitespace only).
+    """
+    start, end = span
+    piece = text[start:end]
+    stripped = piece.lstrip()
+    if not stripped:
+        return span
+    lead = len(piece) - len(stripped)
+    return (start + lead, start + lead + len(stripped.rstrip()))
+
+
 def _to_chunks(
-    text: str, file_path: str, kind: str, spans: Sequence[Span]
+    text: str,
+    file_path: str,
+    kind: str,
+    spans: Sequence[Span],
+    trim: bool = False,
 ) -> List[Chunk]:
     """Build chunks from spans, dropping whitespace-only ones.
 
@@ -119,10 +143,13 @@ def _to_chunks(
         file_path: Path stored in every chunk.
         kind: Chunk kind label.
         spans: ``(start, end)`` spans in order.
+        trim: Strip leading/trailing whitespace from each chunk.
 
     Returns:
         The chunks.
     """
+    if trim:
+        spans = [_trim(text, sp) for sp in spans]
     return [
         Chunk(
             file_path=file_path,
@@ -137,7 +164,7 @@ def _to_chunks(
 
 
 def chunk_text(
-    text: str, file_path: str, max_chunk_size: int
+    text: str, file_path: str, max_chunk_size: int, trim: bool = False
 ) -> List[Chunk]:
     """Chunk plain text by paragraph, line or word boundaries.
 
@@ -145,6 +172,7 @@ def chunk_text(
         text: File content.
         file_path: Path stored in every chunk.
         max_chunk_size: Maximum chunk size in characters.
+        trim: Strip leading/trailing whitespace from each chunk.
 
     Returns:
         The chunks, in file order.
@@ -154,7 +182,7 @@ def chunk_text(
     """
     _check_size(max_chunk_size)
     spans = _split_span(text, 0, len(text), max_chunk_size)
-    return _to_chunks(text, file_path, "text", spans)
+    return _to_chunks(text, file_path, "text", spans, trim)
 
 
 def _line_starts(text: str) -> List[int]:
@@ -301,7 +329,7 @@ def _class_pieces(
 
 
 def chunk_python(
-    text: str, file_path: str, max_chunk_size: int
+    text: str, file_path: str, max_chunk_size: int, trim: bool = False
 ) -> List[Chunk]:
     """Chunk Python source along top-level definitions and methods.
 
@@ -311,6 +339,7 @@ def chunk_python(
         text: File content.
         file_path: Path stored in every chunk.
         max_chunk_size: Maximum chunk size in characters.
+        trim: Strip leading/trailing whitespace from each chunk.
 
     Returns:
         The chunks, in file order.
@@ -322,7 +351,7 @@ def chunk_python(
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return chunk_text(text, file_path, max_chunk_size)
+        return chunk_text(text, file_path, max_chunk_size, trim)
     starts = _line_starts(text)
     spans: List[Span] = []
     for span, node in _segments(tree, text, starts):
@@ -336,8 +365,8 @@ def chunk_python(
                 spans.extend(_split_span(text, start, end, max_chunk_size))
         else:
             spans.extend(_split_span(text, span[0], span[1], max_chunk_size))
-    spans = _pack(spans, max_chunk_size // 2)
-    return _to_chunks(text, file_path, "python", spans)
+    spans = _pack(spans, int(max_chunk_size * _PY_MERGE_FRACTION))
+    return _to_chunks(text, file_path, "python", spans, trim)
 
 
 def _markdown_sections(text: str) -> List[Span]:
@@ -372,18 +401,19 @@ def _markdown_sections(text: str) -> List[Span]:
 
 
 def chunk_markdown(
-    text: str, file_path: str, max_chunk_size: int
+    text: str, file_path: str, max_chunk_size: int, trim: bool = False
 ) -> List[Chunk]:
     """Chunk markdown by heading sections.
 
     Oversized sections are split on paragraph boundaries, and sections
-    shorter than 200 characters are merged into the following one when the
+    shorter than 400 characters are merged into the following one when the
     result still fits.
 
     Args:
         text: File content.
         file_path: Path stored in every chunk.
         max_chunk_size: Maximum chunk size in characters.
+        trim: Strip leading/trailing whitespace from each chunk.
 
     Returns:
         The chunks, in file order.
@@ -405,11 +435,11 @@ def chunk_markdown(
             merged[-1] = (merged[-1][0], end)
         else:
             merged.append((start, end))
-    return _to_chunks(text, file_path, "markdown", merged)
+    return _to_chunks(text, file_path, "markdown", merged, trim)
 
 
 def chunk_file(
-    text: str, file_path: str, max_chunk_size: int
+    text: str, file_path: str, max_chunk_size: int, trim: bool = False
 ) -> List[Chunk]:
     """Chunk a file with the strategy matching its extension.
 
@@ -418,6 +448,8 @@ def chunk_file(
         file_path: Path stored in every chunk; its extension selects the
             chunker (``.py``, ``.md``/``.mdx``/``.rst``, otherwise text).
         max_chunk_size: Maximum chunk size in characters.
+        trim: Strip leading/trailing whitespace from each chunk.
+        trim: Strip leading/trailing whitespace from each chunk.
 
     Returns:
         The chunks, in file order.
@@ -427,7 +459,46 @@ def chunk_file(
     """
     lower = file_path.lower()
     if lower.endswith(".py"):
-        return chunk_python(text, file_path, max_chunk_size)
+        return chunk_python(text, file_path, max_chunk_size, trim)
     if lower.endswith(_MARKDOWN_SUFFIXES):
-        return chunk_markdown(text, file_path, max_chunk_size)
-    return chunk_text(text, file_path, max_chunk_size)
+        return chunk_markdown(text, file_path, max_chunk_size, trim)
+    return chunk_text(text, file_path, max_chunk_size, trim)
+
+
+def markdown_heading_contexts(text: str, chunks: Sequence[Chunk]) -> List[str]:
+    """Find the parent headings that precede each chunk of a markdown file.
+
+    Args:
+        text: The full file content.
+        chunks: Chunks of that file, in file order.
+
+    Returns:
+        For each chunk, the titles of the headings that are open at its
+        start (excluding headings located inside the chunk itself).
+    """
+    heads: List[Tuple[int, int, str]] = []
+    fence = ""
+    offset = 0
+    for line in text.split("\n"):
+        fence_match = _FENCE_RE.match(line)
+        if fence:
+            if fence_match and fence_match.group(1)[0] == fence[0]:
+                fence = ""
+        elif fence_match:
+            fence = fence_match.group(1)
+        elif _HEADING_RE.match(line):
+            stripped = line.strip()
+            level = len(stripped) - len(stripped.lstrip("#"))
+            heads.append((offset, level, stripped.lstrip("#").strip()))
+        offset += len(line) + 1
+    contexts: List[str] = []
+    for chunk in chunks:
+        stack: List[Tuple[int, str]] = []
+        for pos, level, title in heads:
+            if pos >= chunk.first_character_index:
+                break
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, title))
+        contexts.append(" ".join(t for _, t in stack))
+    return contexts

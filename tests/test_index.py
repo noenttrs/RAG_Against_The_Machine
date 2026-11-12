@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from src.index import build_index
+from src.chunking import chunk_markdown, markdown_heading_contexts
+
+from src.index import build_index, list_files, parse_exclude_dirs
 from src.retriever import IndexNotFoundError, Retriever
 
 
@@ -60,3 +62,32 @@ def test_missing_index(tmp_path: Path) -> None:
     """Loading a missing index raises the custom error."""
     with pytest.raises(IndexNotFoundError):
         Retriever.load(str(tmp_path / "nope"))
+
+
+def test_exclude_dirs(tmp_path: Path) -> None:
+    """Excluded directory names are skipped below the repo root only."""
+    raw = tmp_path / "raw"
+    for rel in ("repo/docs/a.md", "repo/tests/b.py", "repo/x/examples/c.py",
+                "repo/tests.md", "tests/d.md"):
+        (raw / rel).parent.mkdir(parents=True, exist_ok=True)
+        (raw / rel).write_text("hello")
+    names = {
+        p.relative_to(raw).as_posix()
+        for p in list_files(str(raw), parse_exclude_dirs("tests,examples"))
+    }
+    assert names == {"repo/docs/a.md", "repo/tests.md", "tests/d.md"}
+    assert len(list_files(str(raw), parse_exclude_dirs(""))) == 5
+
+
+def test_heading_context_and_trim() -> None:
+    """Parent headings are found; trimming keeps text slices exact."""
+    text = "# Top\n\n## Sub\n\n" + "word " * 300 + "\n\n### Deep\n\n" + (
+        "more " * 300
+    )
+    chunks = chunk_markdown(text, "f.md", 1000, trim=True)
+    for c in chunks:
+        assert text[c.first_character_index:c.last_character_index] == c.text
+        assert c.text == c.text.strip()
+    ctx = markdown_heading_contexts(text, chunks)
+    assert ctx[0] == ""
+    assert any("Top Sub" in c for c in ctx[1:])

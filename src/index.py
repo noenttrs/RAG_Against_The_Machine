@@ -5,19 +5,26 @@ import re
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, FrozenSet, List, Tuple
 
 import numpy as np
 import scipy.sparse as sp
 from tqdm import tqdm
 
-from src.chunking import chunk_file
+from src.chunking import chunk_file, markdown_heading_contexts
 from src.models import Chunk
 from src.tokenizer import tokenize
 
 K1 = 1.2
 B = 0.75
 PATH_REPEAT = 2
+DEFAULT_EXCLUDE_DIRS = (
+    "tests,benchmarks,examples,csrc,.buildkite,.github,tools"
+)
+BIGRAM_ALL = False
+TRIM_CHUNKS = True
+HEADING_CONTEXT = True
+HEADING_REPEAT = 1
 MAX_FILE_SIZE = 1_000_000
 EXTENSIONS = frozenset(
     [".py", ".md", ".txt", ".rst", ".yaml", ".yml", ".toml", ".sh",
@@ -26,11 +33,27 @@ EXTENSIONS = frozenset(
 _PATH_SPLIT_RE = re.compile(r"[/._\-]+")
 
 
-def list_files(raw_dir: str) -> List[Path]:
+def parse_exclude_dirs(exclude_dirs: str) -> FrozenSet[str]:
+    """Parse a comma separated list of directory names.
+
+    Args:
+        exclude_dirs: Comma separated names (empty means none).
+
+    Returns:
+        The set of names.
+    """
+    return frozenset(n.strip() for n in exclude_dirs.split(",") if n.strip())
+
+
+def list_files(
+    raw_dir: str, exclude: FrozenSet[str] = frozenset()
+) -> List[Path]:
     """List indexable files below a directory, sorted.
 
     Args:
         raw_dir: Root directory of the corpus.
+        exclude: Directory names skipped on any path component below
+            the repository root (the first component under ``raw_dir``).
 
     Returns:
         Sorted list of file paths (as joined with ``raw_dir``).
@@ -40,23 +63,30 @@ def list_files(raw_dir: str) -> List[Path]:
     for path in sorted(root.rglob("*")):
         if path.suffix not in EXTENSIONS or not path.is_file():
             continue
+        if exclude & set(path.relative_to(root).parts[1:-1]):
+            continue
         if path.stat().st_size > MAX_FILE_SIZE:
             continue
         files.append(path)
     return files
 
 
-def indexed_text(chunk: Chunk) -> str:
+def indexed_text(chunk: Chunk, context: str = "") -> str:
     """Build the text that is indexed for a chunk.
 
     Args:
         chunk: The chunk.
+        context: Parent headings text (markdown), repeated
+            ``HEADING_REPEAT`` times.
 
     Returns:
         Path words (repeated) followed by the chunk text.
     """
     words = " ".join(w for w in _PATH_SPLIT_RE.split(chunk.file_path) if w)
-    return " ".join([words] * PATH_REPEAT) + "\n" + chunk.text
+    head = " ".join([words] * PATH_REPEAT)
+    if context:
+        head += "\n" + " ".join([context] * HEADING_REPEAT)
+    return head + "\n" + chunk.text
 
 
 def build_matrix(
@@ -97,13 +127,19 @@ def build_matrix(
     return matrix, vocab
 
 
-def build_index(raw_dir: str, processed_dir: str, max_chunk_size: int) -> int:
+def build_index(
+    raw_dir: str,
+    processed_dir: str,
+    max_chunk_size: int,
+    exclude_dirs: str = DEFAULT_EXCLUDE_DIRS,
+) -> int:
     """Chunk the corpus, build the BM25 index and save it.
 
     Args:
         raw_dir: Root directory of the corpus.
         processed_dir: Directory where the index files are written.
         max_chunk_size: Maximum chunk size in characters.
+        exclude_dirs: Comma separated directory names to skip.
 
     Returns:
         The number of chunks indexed.
@@ -111,15 +147,25 @@ def build_index(raw_dir: str, processed_dir: str, max_chunk_size: int) -> int:
     start = time.time()
     chunks: List[Chunk] = []
     docs: List[List[str]] = []
-    for path in tqdm(list_files(raw_dir), desc="Indexing", unit="file"):
+    files = list_files(raw_dir, parse_exclude_dirs(exclude_dirs))
+    for path in tqdm(files, desc="Indexing", unit="file"):
         with open(path, encoding="utf-8", errors="replace") as handle:
             text = handle.read()
         file_path = path.as_posix()
         if file_path.startswith("./"):
             file_path = file_path[2:]
-        for chunk in chunk_file(text, file_path, max_chunk_size):
+        file_chunks = chunk_file(text, file_path, max_chunk_size, TRIM_CHUNKS)
+        contexts = [""] * len(file_chunks)
+        if HEADING_CONTEXT and path.suffix in (".md", ".rst"):
+            contexts = markdown_heading_contexts(text, file_chunks)
+        for chunk, context in zip(file_chunks, contexts):
             chunks.append(chunk)
-            docs.append(tokenize(indexed_text(chunk)))
+            docs.append(
+                tokenize(
+                    indexed_text(chunk, context),
+                    BIGRAM_ALL or path.suffix != ".py",
+                )
+            )
     matrix, vocab = build_matrix(docs)
     out = Path(processed_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -134,6 +180,7 @@ def build_index(raw_dir: str, processed_dir: str, max_chunk_size: int) -> int:
         "b": B,
         "n_chunks": len(chunks),
         "raw_dir": raw_dir,
+        "exclude_dirs": exclude_dirs,
     }
     with open(out / "meta.json", "w", encoding="utf-8") as handle:
         json.dump(meta, handle)

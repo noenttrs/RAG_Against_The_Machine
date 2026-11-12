@@ -8,7 +8,7 @@ from typing import Any, Optional
 from pydantic import ValidationError
 
 from src.evaluation import recall_table
-from src.index import build_index
+from src.index import DEFAULT_EXCLUDE_DIRS, build_index
 from src.models import (
     MinimalSearchResults,
     RagDataset,
@@ -65,6 +65,22 @@ def _check_k(k: Any) -> Optional[int]:
     return int(k)
 
 
+def _exclude_text(value: Any) -> str:
+    """Normalize the ``exclude_dirs`` option (Fire may parse lists).
+
+    Args:
+        value: Raw value from the command line.
+
+    Returns:
+        A comma separated string.
+    """
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v) for v in value)
+    return str(value)
+
+
 def _load_retriever(processed_dir: str) -> Optional[Retriever]:
     """Load the retriever, printing a message on failure.
 
@@ -111,6 +127,7 @@ class RagCLI:
         max_chunk_size: int = 2000,
         raw_dir: str = "data/raw",
         processed_dir: str = "data/processed",
+        exclude_dirs: str = DEFAULT_EXCLUDE_DIRS,
     ) -> None:
         """Index the raw corpus.
 
@@ -118,6 +135,8 @@ class RagCLI:
             max_chunk_size: Maximum chunk size in characters.
             raw_dir: Directory holding the raw repository.
             processed_dir: Directory where the index is written.
+            exclude_dirs: Comma separated directory names to skip
+                (empty string excludes nothing).
         """
         if not _is_int(max_chunk_size) or max_chunk_size < 1:
             _error("max_chunk_size must be an integer >= 1")
@@ -126,7 +145,12 @@ class RagCLI:
             _error(f"raw_dir does not exist: {raw_dir}")
             return
         try:
-            build_index(str(raw_dir), str(processed_dir), max_chunk_size)
+            build_index(
+                str(raw_dir),
+                str(processed_dir),
+                max_chunk_size,
+                _exclude_text(exclude_dirs),
+            )
         except Exception as exc:
             _error(f"indexing failed: {exc}")
 
