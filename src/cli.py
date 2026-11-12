@@ -4,16 +4,29 @@ import functools
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    TypeVar,
+)
 
 from pydantic import ValidationError
+from tqdm import tqdm
 
 from src.evaluation import recall_table
+from src.generator import load_source_text
 from src.index import DEFAULT_EXCLUDE_DIRS, build_index
 from src.models import (
+    Chunk,
+    MinimalAnswer,
     MinimalSearchResults,
     RagDataset,
     StudentSearchResults,
+    StudentSearchResultsAndAnswer,
 )
 from src.retriever import IndexNotFoundError, Retriever
 
@@ -143,6 +156,130 @@ def _load_model(path: str, model: Any) -> Any:
     return None
 
 
+class _Generator(Protocol):
+    """Anything able to answer a question from chunks."""
+
+    def generate(self, question: str, contexts: List[Chunk]) -> str:
+        """Answer a question."""
+
+
+GeneratorFactory = Callable[[str, int], _Generator]
+
+
+def _default_factory(model_name: str, max_new_tokens: int) -> _Generator:
+    """Create the real answer generator (imports torch lazily).
+
+    Args:
+        model_name: Hugging Face model name.
+        max_new_tokens: Maximum number of generated tokens.
+
+    Returns:
+        The generator.
+    """
+    from src.generator import AnswerGenerator
+
+    return AnswerGenerator(
+        model_name, max_new_tokens=max_new_tokens
+    )
+
+
+def _make_generator(
+    factory: GeneratorFactory, model_name: str, max_new_tokens: Any
+) -> Optional[_Generator]:
+    """Build a generator, printing a clean error if loading fails.
+
+    Args:
+        factory: Callable building the generator.
+        model_name: Model name.
+        max_new_tokens: Maximum number of generated tokens.
+
+    Returns:
+        The generator or None (error printed).
+    """
+    if not _is_int(max_new_tokens) or max_new_tokens < 1:
+        _error("max_new_tokens must be an integer >= 1")
+        return None
+    try:
+        return factory(model_name, int(max_new_tokens))
+    except Exception as exc:
+        _error(f"cannot load model {model_name!r}: {exc}")
+        return None
+
+
+def _answer_dataset(
+    results_path: str,
+    save_directory: str,
+    model_name: str,
+    raw_dir_root: str,
+    max_new_tokens: Any,
+    factory: GeneratorFactory,
+) -> None:
+    """Answer all questions of a search results file and save them.
+
+    Args:
+        results_path: Path of the search results JSON.
+        save_directory: Directory where the answers are saved.
+        model_name: Model name.
+        raw_dir_root: Root against which source paths resolve.
+        max_new_tokens: Maximum number of generated tokens.
+        factory: Callable building the generator.
+    """
+    results = _load_model(results_path, StudentSearchResults)
+    if results is None:
+        return
+    generator = _make_generator(factory, model_name, max_new_tokens)
+    if generator is None:
+        return
+    total = len(results.search_results)
+    print(f"Loaded {total} questions from {results_path}")
+    cache: Dict[str, str] = {}
+    answered: List[MinimalAnswer] = []
+    for item in tqdm(results.search_results, desc="Answering"):
+        chunks: List[Chunk] = []
+        for src in item.retrieved_sources:
+            text = load_source_text(src, raw_dir_root, cache)
+            if text is not None:
+                chunks.append(
+                    Chunk(
+                        file_path=src.file_path,
+                        first_character_index=src.first_character_index,
+                        last_character_index=src.last_character_index,
+                        kind="source",
+                        text=text,
+                    )
+                )
+        try:
+            text_answer = generator.generate(item.question, chunks)
+        except Exception as exc:
+            print(
+                f"Warning: generation failed for {item.question_id}: "
+                f"{exc}",
+                file=sys.stderr,
+            )
+            text_answer = ""
+        answered.append(
+            MinimalAnswer(
+                question_id=item.question_id,
+                question=item.question,
+                retrieved_sources=item.retrieved_sources,
+                answer=text_answer,
+            )
+        )
+    output = StudentSearchResultsAndAnswer(
+        search_results=answered, k=results.k
+    )
+    try:
+        out_dir = Path(save_directory)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / Path(results_path).name
+        with open(out_path, "w", encoding="utf-8") as handle:
+            handle.write(output.model_dump_json(indent=2))
+    except OSError as exc:
+        _error(f"cannot save answers: {exc}")
+        return
+    print(f"Saved student_search_results_and_answer to {out_path}")
+
+
 class RagCLI:
     """RAG against the machine: index, search, answer and evaluate."""
 
@@ -265,12 +402,14 @@ class RagCLI:
             return
         print(f"Saved student_search_results to {out_path}")
 
+    @_safe
     def answer(
         self,
         query: str = "",
         k: int = 10,
         processed_dir: str = "data/processed",
         model_name: str = "Qwen/Qwen3-0.6B",
+        max_new_tokens: int = 256,
     ) -> None:
         """Retrieve chunks and answer a single query.
 
@@ -279,9 +418,33 @@ class RagCLI:
             k: Number of chunks to retrieve.
             processed_dir: Directory holding the index.
             model_name: Name of the generation model.
+            max_new_tokens: Maximum number of generated tokens.
         """
-        print("answer: not implemented yet")
+        query = str(query)
+        k_value = _check_k(k)
+        if k_value is None:
+            return
+        if not query.strip():
+            _error("empty query")
+            return
+        retriever = _load_retriever(str(processed_dir))
+        if retriever is None:
+            return
+        generator = _make_generator(
+            _default_factory, str(model_name), max_new_tokens
+        )
+        if generator is None:
+            return
+        chunks = retriever.search(query, k_value)
+        result = MinimalAnswer(
+            question_id=_new_id(),
+            question=query,
+            retrieved_sources=[c.to_source() for c in chunks],
+            answer=generator.generate(query, chunks),
+        )
+        print(result.model_dump_json(indent=2))
 
+    @_safe
     def answer_dataset(
         self,
         student_search_results_path: str = (
@@ -293,6 +456,7 @@ class RagCLI:
         ),
         model_name: str = "Qwen/Qwen3-0.6B",
         raw_dir_root: str = ".",
+        max_new_tokens: int = 256,
     ) -> None:
         """Answer every question of a search-results file.
 
@@ -301,8 +465,16 @@ class RagCLI:
             save_directory: Directory where the answers are saved.
             model_name: Name of the generation model.
             raw_dir_root: Root against which source file paths resolve.
+            max_new_tokens: Maximum number of generated tokens.
         """
-        print("answer_dataset: not implemented yet")
+        _answer_dataset(
+            str(student_search_results_path),
+            str(save_directory),
+            str(model_name),
+            str(raw_dir_root),
+            max_new_tokens,
+            _default_factory,
+        )
 
     @_safe
     def evaluate(
