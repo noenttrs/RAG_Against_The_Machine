@@ -1,0 +1,37 @@
+[project]
+name = "rag-against-the-machine"
+version = "0.1.0"
+description = "BM25 RAG system over the vLLM repository, answering with Qwen3-0.6B."
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2",
+    "fire",
+    "tqdm",
+    "numpy",
+    "scipy",
+    "transformers>=4.51",
+    "torch",
+    "accelerate",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "flake8",
+    "mypy",
+    "types-tqdm",
+]
+
+[tool.uv]
+package = false
+
+[tool.mypy]
+exclude = ["^\\.venv/", "^data/", "^\\.superpowers/"]
+
+[[tool.mypy.overrides]]
+module = ["fire", "fire.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
