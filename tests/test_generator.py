@@ -161,6 +161,7 @@ def test_model_load_failure(
     with pytest.raises(_CliError, match="cannot load model"):
         _answer_dataset(
             str(path), str(tmp_path / "o"), "m", str(tmp_path), 16, factory
+        )
     capsys.readouterr()
     assert not (tmp_path / "o").exists()
 
