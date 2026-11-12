@@ -85,7 +85,8 @@ noise). To index everything, pass an empty string:
 
 ### Makefile
 
-`make install`, `make run`, `make debug` (pdb), `make clean`, `make lint`
+`make install`, `make run` (index, then a sample search), `make debug`
+(pdb), `make clean`, `make lint`
 (flake8 + mypy), `make lint-strict` (flake8 + `mypy --strict`),
 `make test` (pytest, no corpus or model needed).
 
@@ -111,9 +112,16 @@ IoU >= 0.05) without the moulinette.
 ### Error handling
 
 No command ever prints a traceback: empty query, non-integer `k`,
-`k <= 0` (no sources, with a warning), missing or malformed JSON, schema
-mismatch, missing/corrupt index, invalid `--max_chunk_size`, missing raw
-directory or unavailable model all produce `Error: ...` on stderr.
+`evaluate` with `k <= 0`, missing or malformed JSON, schema mismatch,
+missing/corrupt index, invalid `--max_chunk_size` (it must be between 1
+and 2000, the moulinette `max_context_length`), missing raw directory or
+unavailable model all produce `Error: ...` on stderr and **exit with
+status 1**. `k <= 0` on `search`/`search_dataset`/`answer` is only a
+warning (no sources, exit status 0).
+
+`answer_dataset` handles Ctrl-C gracefully: the answers produced so far
+are saved (remaining questions get an empty answer), a note is printed and
+the process exits with status 130.
 
 ## System architecture
 

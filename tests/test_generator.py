@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 import pytest
 
-from src.cli import RagCLI, _answer_dataset
+from src.cli import RagCLI, _answer_dataset, _CliError
 from src.generator import (
     NO_CONTEXT,
     AnswerGenerator,
@@ -123,6 +123,32 @@ def test_answer_dataset(
     assert result.search_results[0].retrieved_sources[0].file_path == "a.md"
 
 
+def test_answer_dataset_interrupt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ctrl-C saves the answers so far, blanks the rest, exits 130."""
+    path = _results_file(tmp_path)
+    out = tmp_path / "out"
+
+    class _Interrupting:
+        def generate(self, question: str, contexts: List[Chunk]) -> str:
+            if question == "boom":
+                raise KeyboardInterrupt
+            return "ok"
+
+    with pytest.raises(SystemExit) as info:
+        _answer_dataset(
+            str(path), str(out), "m", str(tmp_path), 16,
+            lambda name, n: _Interrupting(),
+        )
+    assert info.value.code == 130
+    assert "Interrupted" in capsys.readouterr().err
+    result = StudentSearchResultsAndAnswer.model_validate_json(
+        (out / "res.json").read_text()
+    )
+    assert [a.answer for a in result.search_results] == ["ok", ""]
+
+
 def test_model_load_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -132,11 +158,10 @@ def test_model_load_failure(
     def factory(name: str, n: int) -> _FakeGen:
         raise OSError("offline")
 
-    _answer_dataset(
-        str(path), str(tmp_path / "o"), "m", str(tmp_path), 16, factory
-    )
-    err = capsys.readouterr().err
-    assert "cannot load model" in err
+    with pytest.raises(_CliError, match="cannot load model"):
+        _answer_dataset(
+            str(path), str(tmp_path / "o"), "m", str(tmp_path), 16, factory
+    capsys.readouterr()
     assert not (tmp_path / "o").exists()
 
 
@@ -155,7 +180,9 @@ def test_cli_validation(
          "file not found"),
     ]
     for call, message in cases:
-        call()
+        with pytest.raises(SystemExit) as info:
+            call()
+        assert info.value.code == 1
         assert message in capsys.readouterr().err
 
 

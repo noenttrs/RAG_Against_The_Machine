@@ -1,17 +1,25 @@
 """CLI edge-case tests: nothing may raise."""
 
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
 from src.cli import RagCLI
 
 
+def _exits_1(call: Callable[[], None]) -> None:
+    """Assert that a command reports an error and exits with status 1."""
+    with pytest.raises(SystemExit) as info:
+        call()
+    assert info.value.code == 1
+
+
 def test_missing_index(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Searching without an index prints an error."""
-    RagCLI().search("lora", 5, str(tmp_path / "none"))
+    _exits_1(lambda: RagCLI().search("lora", 5, str(tmp_path / "none")))
     assert "Index not found" in capsys.readouterr().err
 
 
@@ -20,11 +28,21 @@ def test_index_validation(
 ) -> None:
     """Bad chunk sizes and missing raw dirs are reported."""
     cli = RagCLI()
-    cli.index("abc", str(tmp_path), str(tmp_path / "p"))  # type: ignore
-    cli.index(True, str(tmp_path), str(tmp_path / "p"))
-    cli.index(0, str(tmp_path), str(tmp_path / "p"))
-    cli.index(100, str(tmp_path / "missing"), str(tmp_path / "p"))
+    p = str(tmp_path / "p")
+    _exits_1(lambda: cli.index("abc", str(tmp_path), p))  # type: ignore
+    _exits_1(lambda: cli.index(True, str(tmp_path), p))
+    _exits_1(lambda: cli.index(0, str(tmp_path), p))
+    _exits_1(lambda: cli.index(100, str(tmp_path / "missing"), p))
     assert capsys.readouterr().err.count("Error") == 4
+
+
+def test_index_max_chunk_size_limit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Chunk sizes above the moulinette limit (2000) are rejected."""
+    _exits_1(lambda: RagCLI().index(2001, str(tmp_path), str(tmp_path / "p")))
+    assert "between 1 and 2000" in capsys.readouterr().err
+    assert not (tmp_path / "p").exists()
 
 
 def test_flow(
@@ -41,11 +59,13 @@ def test_flow(
     capsys.readouterr()
     cli.search("lora adapters", 3, idx)
     assert "lora.md" in capsys.readouterr().out
-    cli.search(12345, 3, idx)  # type: ignore
-    cli.search("", 3, idx)
-    cli.search("lora", 0, idx)
-    cli.search("lora", "abc", idx)  # type: ignore
-    cli.search("lora", True, idx)
+    cli.search(12345, 3, idx)  # type: ignore  # coerced to a query
+    capsys.readouterr()
+    _exits_1(lambda: cli.search("", 3, idx))
+    cli.search("lora", 0, idx)  # warning only, exit status 0
+    assert "Warning" in capsys.readouterr().err
+    _exits_1(lambda: cli.search("lora", "abc", idx))  # type: ignore
+    _exits_1(lambda: cli.search("lora", True, idx))
     capsys.readouterr()
     ds = tmp_path / "ds.json"
     ds.write_text('{"rag_questions": [{"question_id": "1", '
@@ -65,9 +85,21 @@ def test_bad_files(
     cli = RagCLI()
     bad = tmp_path / "bad.json"
     bad.write_text("{not json")
-    cli.search_dataset(str(tmp_path / "x.json"), 5, str(tmp_path), "idx")
-    cli.search_dataset(str(bad), 5, str(tmp_path), "idx")
-    cli.evaluate(str(bad), str(bad), 5)
-    cli.evaluate(str(tmp_path / "x.json"), str(bad), 5)
-    cli.evaluate(str(bad), str(bad), "abc")  # type: ignore
+    x = str(tmp_path / "x.json")
+    _exits_1(lambda: cli.search_dataset(x, 5, str(tmp_path), "idx"))
+    _exits_1(lambda: cli.search_dataset(str(bad), 5, str(tmp_path), "idx"))
+    _exits_1(lambda: cli.evaluate(str(bad), str(bad), 5))
+    _exits_1(lambda: cli.evaluate(x, str(bad), 5))
+    _exits_1(lambda: cli.evaluate(str(bad), str(bad), "abc"))  # type: ignore
     assert capsys.readouterr().err.count("Error") == 5
+
+
+def test_evaluate_k_zero_single_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """evaluate --k 0 prints exactly one error and no warning."""
+    f = str(tmp_path / "x.json")
+    _exits_1(lambda: RagCLI().evaluate(f, f, 0))
+    err = capsys.readouterr().err
+    assert err.count("Error") == 1
+    assert "Warning" not in err

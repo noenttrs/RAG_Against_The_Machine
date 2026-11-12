@@ -40,36 +40,51 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+MAX_SOURCE_LENGTH = 2000  # moulinette max_context_length
+INTERRUPTED_EXIT_CODE = 130
+
 _F = TypeVar("_F", bound=Callable[..., None])
 
 
+class _CliError(Exception):
+    """A user-facing error: printed as ``Error: ...`` then exit status 1."""
+
+
 def _safe(func: _F) -> _F:
-    """Turn any unexpected exception of a command into an error message.
+    """Turn errors of a command into a message and exit status 1.
 
     Args:
         func: A CLI command.
 
     Returns:
-        The wrapped command, which never raises.
+        The wrapped command: it never shows a traceback and calls
+        ``sys.exit(1)`` when an error was reported.
     """
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> None:
         try:
             func(*args, **kwargs)
+        except _CliError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         except Exception as exc:
-            _error(f"{type(exc).__name__}: {exc}")
+            print(f"Error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     return wrapper  # type: ignore[return-value]
 
 
 def _error(message: str) -> None:
-    """Print an error message to stderr.
+    """Abort the current command with an error message.
 
     Args:
-        message: The message.
+        message: The message (printed by ``_safe``, exit status 1).
+
+    Raises:
+        _CliError: Always.
     """
-    print(f"Error: {message}", file=sys.stderr)
+    raise _CliError(message)
 
 
 def _is_int(value: Any) -> bool:
@@ -206,6 +221,24 @@ def _make_generator(
         return None
 
 
+def _answer_of(item: MinimalSearchResults, answer: str) -> MinimalAnswer:
+    """Build a MinimalAnswer from a search result and its answer text.
+
+    Args:
+        item: The search result of one question.
+        answer: The answer text ("" if none).
+
+    Returns:
+        The answered question.
+    """
+    return MinimalAnswer(
+        question_id=item.question_id,
+        question=item.question,
+        retrieved_sources=item.retrieved_sources,
+        answer=answer,
+    )
+
+
 def _answer_dataset(
     results_path: str,
     save_directory: str,
@@ -234,36 +267,43 @@ def _answer_dataset(
     print(f"Loaded {total} questions from {results_path}")
     cache: Dict[str, str] = {}
     answered: List[MinimalAnswer] = []
-    for item in tqdm(results.search_results, desc="Answering"):
-        chunks: List[Chunk] = []
-        for src in item.retrieved_sources:
-            text = load_source_text(src, raw_dir_root, cache)
-            if text is not None:
-                chunks.append(
-                    Chunk(
-                        file_path=src.file_path,
-                        first_character_index=src.first_character_index,
-                        last_character_index=src.last_character_index,
-                        kind="source",
-                        text=text,
+    interrupted = False
+    try:
+        for item in tqdm(results.search_results, desc="Answering"):
+            chunks: List[Chunk] = []
+            for src in item.retrieved_sources:
+                text = load_source_text(src, raw_dir_root, cache)
+                if text is not None:
+                    chunks.append(
+                        Chunk(
+                            file_path=src.file_path,
+                            first_character_index=src.first_character_index,
+                            last_character_index=src.last_character_index,
+                            kind="source",
+                            text=text,
+                        )
                     )
+            try:
+                text_answer = generator.generate(item.question, chunks)
+            except Exception as exc:
+                print(
+                    f"Warning: generation failed for {item.question_id}: "
+                    f"{exc}",
+                    file=sys.stderr,
                 )
-        try:
-            text_answer = generator.generate(item.question, chunks)
-        except Exception as exc:
-            print(
-                f"Warning: generation failed for {item.question_id}: "
-                f"{exc}",
-                file=sys.stderr,
-            )
-            text_answer = ""
-        answered.append(
-            MinimalAnswer(
-                question_id=item.question_id,
-                question=item.question,
-                retrieved_sources=item.retrieved_sources,
-                answer=text_answer,
-            )
+                text_answer = ""
+            answered.append(_answer_of(item, text_answer))
+    except KeyboardInterrupt:
+        interrupted = True
+        done = len(answered)
+        answered.extend(
+            _answer_of(item, "")
+            for item in results.search_results[len(answered):]
+        )
+        print(
+            f"\nInterrupted: saving the {done} of {total} answers "
+            "produced so far (the others are empty).",
+            file=sys.stderr,
         )
     output = StudentSearchResultsAndAnswer(
         search_results=answered, k=results.k
@@ -276,8 +316,9 @@ def _answer_dataset(
             handle.write(output.model_dump_json(indent=2))
     except OSError as exc:
         _error(f"cannot save answers: {exc}")
-        return
     print(f"Saved student_search_results_and_answer to {out_path}")
+    if interrupted:
+        sys.exit(INTERRUPTED_EXIT_CODE)
 
 
 class RagCLI:
@@ -300,9 +341,13 @@ class RagCLI:
             exclude_dirs: Comma separated directory names to skip
                 (empty string excludes nothing).
         """
-        if not _is_int(max_chunk_size) or max_chunk_size < 1:
+        if not _is_int(max_chunk_size):
             _error("max_chunk_size must be an integer >= 1")
-            return
+        if not 1 <= max_chunk_size <= MAX_SOURCE_LENGTH:
+            _error(
+                f"max_chunk_size must be between 1 and {MAX_SOURCE_LENGTH} "
+                "(moulinette max_context_length)"
+            )
         if not Path(str(raw_dir)).is_dir():
             _error(f"raw_dir does not exist: {raw_dir}")
             return
@@ -495,11 +540,10 @@ class RagCLI:
             dataset_path: Path of the answered reference dataset.
             k: At most this many retrieved sources are considered.
         """
+        if _is_int(k) and k <= 0:
+            _error("k must be positive for evaluation")
         k_value = _check_k(k)
         if k_value is None:
-            return
-        if k_value <= 0:
-            _error("k must be positive for evaluation")
             return
         results = _load_model(
             str(student_search_results_path), StudentSearchResults

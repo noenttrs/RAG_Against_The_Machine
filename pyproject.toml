@@ -9,9 +9,8 @@ dependencies = [
     "tqdm",
     "numpy",
     "scipy",
-    "transformers>=4.51",
+    "transformers>=4.56",
     "torch",
-    "accelerate",
 ]
 
 [dependency-groups]

@@ -153,7 +153,9 @@ def build_index(
     docs: List[List[str]] = []
     files = list_files(raw_dir, parse_exclude_dirs(exclude_dirs))
     for path in tqdm(files, desc="Indexing", unit="file"):
-        with open(path, encoding="utf-8", errors="replace") as handle:
+        with open(
+            path, encoding="utf-8", errors="replace", newline=""
+        ) as handle:
             text = handle.read()
         file_path = path.as_posix()
         if file_path.startswith("./"):

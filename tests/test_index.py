@@ -125,3 +125,33 @@ def test_corrupt_vocab(corpus: Path, tmp_path: Path) -> None:
     (out / "vocab.json").write_text(json.dumps(vocab))
     with pytest.raises(IndexNotFoundError):
         Retriever.load(str(out))
+
+
+def test_offsets_match_source_with_crlf(tmp_path: Path) -> None:
+    """Indexed offsets address the raw bytes (no newline translation)."""
+    from src.generator import load_source_text
+    from src.models import MinimalSource
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "a.md").write_bytes(b"# T\r\nhello world\r\n\r\n## U\r\nbye\r\n")
+    idx = tmp_path / "idx"
+    build_index(str(raw), str(idx), 2000)
+    chunks = json.loads((idx / "chunks.json").read_text())
+    assert chunks
+    for entry in chunks:
+        src = MinimalSource(
+            file_path=entry["file_path"],
+            first_character_index=entry["first_character_index"],
+            last_character_index=entry["last_character_index"],
+        )
+        text = load_source_text(src, ".", None)
+        assert text is not None and text == entry["text"]
+
+
+def test_heading_context_ignores_info_string_close() -> None:
+    """A closing fence needs no info string and must be long enough."""
+    text = "# A\n````\n```\n# no\n````\n## B\nx\n"
+    chunks = chunk_markdown(text, "a.md", 2000)
+    ctx = markdown_heading_contexts(text, chunks)
+    assert len(ctx) == len(chunks)

@@ -369,6 +369,32 @@ def chunk_python(
     return _to_chunks(text, file_path, "python", spans, trim)
 
 
+def _advance_fence(line: str, fence: str) -> Tuple[str, bool]:
+    """Track fenced code blocks one line at a time.
+
+    Args:
+        line: The current line.
+        fence: The opening fence marker, or "" outside a code block.
+
+    Returns:
+        The new fence state and whether the line is part of a code
+        block (including its opening and closing fence lines).
+    """
+    match = _FENCE_RE.match(line)
+    if fence:
+        if (
+            match
+            and match.group(1)[0] == fence[0]
+            and len(match.group(1)) >= len(fence)
+            and not match.group(2).strip()
+        ):
+            return "", True
+        return fence, True
+    if match:
+        return match.group(1), True
+    return "", False
+
+
 def _markdown_sections(text: str) -> List[Span]:
     """Split markdown into sections at ATX headings outside code fences.
 
@@ -382,18 +408,8 @@ def _markdown_sections(text: str) -> List[Span]:
     fence = ""
     offset = 0
     for line in text.split("\n"):
-        fence_match = _FENCE_RE.match(line)
-        if fence:
-            if (
-                fence_match
-                and fence_match.group(1)[0] == fence[0]
-                and len(fence_match.group(1)) >= len(fence)
-                and not fence_match.group(2).strip()
-            ):
-                fence = ""
-        elif fence_match:
-            fence = fence_match.group(1)
-        elif _HEADING_RE.match(line):
+        fence, in_code = _advance_fence(line, fence)
+        if not in_code and _HEADING_RE.match(line):
             cuts.append(offset)
         offset += len(line) + 1
     bounds = [0] + [c for c in cuts if c > 0] + [len(text)]
@@ -479,13 +495,8 @@ def markdown_heading_contexts(text: str, chunks: Sequence[Chunk]) -> List[str]:
     fence = ""
     offset = 0
     for line in text.split("\n"):
-        fence_match = _FENCE_RE.match(line)
-        if fence:
-            if fence_match and fence_match.group(1)[0] == fence[0]:
-                fence = ""
-        elif fence_match:
-            fence = fence_match.group(1)
-        elif _HEADING_RE.match(line):
+        fence, in_code = _advance_fence(line, fence)
+        if not in_code and _HEADING_RE.match(line):
             stripped = line.strip()
             level = len(stripped) - len(stripped.lstrip("#"))
             heads.append((offset, level, stripped.lstrip("#").strip()))

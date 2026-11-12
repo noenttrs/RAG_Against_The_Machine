@@ -4,7 +4,8 @@ install:
 	uv sync
 
 run:
-	uv run python -m src
+	uv run python -m src index
+	uv run python -m src search --query "How do I load a LoRA adapter?" --k 5
 
 debug:
 	uv run python -m pdb -m src
