@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import List
+from typing import Any, Callable, Dict, List, Tuple
 
 import pytest
 
@@ -145,7 +145,7 @@ def test_cli_validation(
 ) -> None:
     """CLI answer commands never raise on bad input."""
     cli = RagCLI()
-    cases = [
+    cases: List[Tuple[Callable[[], None], str]] = [
         (lambda: cli.answer("", 3, str(tmp_path)), "empty query"),
         (lambda: cli.answer("q", "x", str(tmp_path)),  # type: ignore
          "k must be an integer"),
@@ -163,14 +163,14 @@ def test_generate_with_fakes() -> None:
     """generate slices prompt tokens, strips thinking, disables thinking."""
     import torch
 
-    calls: List[dict] = []  # type: ignore[type-arg]
+    calls: List[Dict[str, Any]] = []
 
     class Tok:
         """Fake tokenizer."""
 
         pad_token_id = 0
 
-        def apply_chat_template(self, messages: List[dict],  # type: ignore
+        def apply_chat_template(self, messages: List[Dict[str, str]],
                                 **kwargs: object) -> str:
             """Record the call."""
             calls.append(kwargs)
@@ -181,9 +181,9 @@ def test_generate_with_fakes() -> None:
             """Split."""
             return text.split()
 
-        def __call__(  # type: ignore[type-arg]
+        def __call__(
             self, text: str, return_tensors: str
-        ) -> dict:
+        ) -> Dict[str, Any]:
             """Return 3 prompt tokens."""
             return {"input_ids": torch.tensor([[5, 6, 7]])}
 
