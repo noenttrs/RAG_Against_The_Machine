@@ -332,8 +332,8 @@ uv run python -m src answer_dataset \
 
 ### AI usage
 
-Claude (Anthropic) was used to plan, implement, test and document this
-project under the student's direction, including the retrieval tuning
-experiments (chunking variants, tokenizer options, BM25 parameters) and
-this README. The student reviewed the code and is responsible for
-understanding it.
+An AI coding assistant was used throughout this project, under the
+student's direction: planning the architecture, implementing and testing
+the modules, running the retrieval tuning experiments (chunking variants,
+tokenizer options, BM25 parameters) and writing this README. The student
+reviewed the code and is responsible for understanding it.
